@@ -7,3 +7,6 @@ CREATE TABLE
         source_type TEXT NOT NULL, -- 'S3' or 'LOCAL'
         timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
     );
+
+-- Index for faster lookups on extracted_text
+CREATE INDEX IF NOT EXISTS idx_ocr_results_extracted_text ON ocr_results (extracted_text);

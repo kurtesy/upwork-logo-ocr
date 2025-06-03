@@ -25,6 +25,12 @@ The service also includes a standalone script to trigger bulk OCR processing.
 
 The API server runs by default on `http://127.0.0.1:8000`.
 
+### Authentication
+
+All endpoints, except for the root health check (`/`), require API key authentication.
+The API key must be provided in the `X-API-KEY` request header.
+Refer to the "Environment Variables" section for setting up the `API_KEY`.
+
 ### Health Check
 
 - **`GET /`**
@@ -40,7 +46,7 @@ The API server runs by default on `http://127.0.0.1:8000`.
 
 ### OCR Text Matching
 
-- **`GET /ocr/logo-match`**
+- **`GET /ocr/text-match`**
 
   - **Summary**: Find logos by OCR text similarity.
   - **Description**: Searches through processed OCR results in the SQLite database to find logos whose extracted text matches the provided query text with at least the given similarity threshold.
@@ -58,7 +64,7 @@ The API server runs by default on `http://127.0.0.1:8000`.
     }
     ```
 
-- **`POST /ocr/bulk-logo-match`**
+- **`POST /ocr/bulk-text-match`**
   - **Summary**: Bulk find logos by OCR text similarity (max 100 queries).
   - **Description**: Processes a list of up to 100 text queries to find matching logos.
   - **Request Body (`BulkLogoMatchRequest`)**:
@@ -184,6 +190,7 @@ TESSERACT_CMD=/usr/bin/tesseract # Optional: Path to Tesseract executable if not
 
 # For API server (main.py)
 GRAYSCALE_BUCKET_NAME=your_s3_bucket_with_grayscale_images_for_matching
+API_KEY=your_secret_api_key_here # Add your desired API key
 GRAYSCALE_S3_PREFIX=images/grayscale/
 HOST=0.0.0.0
 PORT=8000
@@ -230,7 +237,7 @@ The server will start, typically on `http://0.0.0.0:8000`.
 
 ## Testing
 
-The `test.py` script provides examples for testing the `/ocr/logo-match` and `/ocr/image-match` endpoints.
+The `test.py` script provides examples for testing the `/ocr/text-match` and `/ocr/image-match` endpoints.
 
 1.  Ensure the API server is running.
 2.  Modify `test.py` with appropriate query texts, image paths, and thresholds.

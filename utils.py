@@ -1,7 +1,8 @@
 import cv2
 import numpy as np
+import difflib
 
-def _calculate_similarity_from_arrays(img1_array: np.ndarray, img2_array: np.ndarray) -> dict | None:
+def _calculate_similarity_from_arrays(img1_array: np.ndarray, img2_array: np.ndarray):
     """
     Core logic to calculate similarity between two images provided as NumPy arrays.
     
@@ -107,3 +108,12 @@ def calculate_image_similarity(image_source1, image_source2):
         raise ValueError("image_source2 must be a file path (str) or a NumPy array.")
 
     return _calculate_similarity_from_arrays(img1_array, img2_array)
+
+def calculate_text_similarity(text1: str, text2: str) -> float:
+    """Calculates the similarity ratio between two strings."""
+    if not text1 and not text2: # Both empty
+        return 1.0
+    if not text1 or not text2: # One empty
+        return 0.0
+    # Use .lower() to make the comparison case-insensitive
+    return difflib.SequenceMatcher(None, text1.lower(), text2.lower()).ratio()

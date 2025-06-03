@@ -4,11 +4,11 @@ from typing import List, Tuple
 
 from fastapi import APIRouter, Query, Depends
 
-from .. import models
-from ..config import OCR_SOURCE_BUCKET_NAME, OCR_SOURCE_S3_PREFIX, AWS_DEFAULT_REGION
-from ..database import get_db_connection
-from ..dependencies import get_current_api_key
-from ..utils import calculate_text_similarity
+import src.models as models
+from src.config import OCR_SOURCE_BUCKET_NAME, OCR_SOURCE_S3_PREFIX, AWS_DEFAULT_REGION
+from src.database import get_db_connection
+from src.dependencies import get_current_api_key
+from src.utils import calculate_text_similarity
 
 logger = logging.getLogger(__name__)
 router = APIRouter(
@@ -19,7 +19,8 @@ router = APIRouter(
 def _get_ocr_text_matches(
     db_cursor: sqlite3.Cursor,
     query_text: str,
-    similarity_threshold: float
+    similarity_threshold: float,
+    max_results_cap: int = 10
 ) -> Tuple[List[str], int, List[str]]:
     """
     Helper function to find OCR text matches for a single query.
@@ -55,6 +56,8 @@ def _get_ocr_text_matches(
                     matching_logos.append(s3_url)
                 else:
                     matching_logos.append(image_identifier)
+            if len(matching_logos) > max_results_cap:
+                break
     except sqlite3.Error as e:
         err_msg = f"SQLite database error in _get_ocr_text_matches: {e}"
         logger.error(err_msg, exc_info=True)

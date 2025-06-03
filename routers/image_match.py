@@ -8,12 +8,12 @@ import cv2
 from fastapi import APIRouter, Query, File, UploadFile, Depends, HTTPException
 from botocore.exceptions import ClientError
 
-from .. import models
-from ..config import S3_CLIENT, GRAYSCALE_BUCKET_NAME, GRAYSCALE_S3_PREFIX
-from ..database import get_db_connection
-from ..dependencies import get_current_api_key
-from ..services.ocr_service import extract_text_from_image_bytes_api
-from ..utils import calculate_image_similarity, calculate_text_similarity
+import src.models as models
+from src.config import S3_CLIENT, GRAYSCALE_BUCKET_NAME, GRAYSCALE_S3_PREFIX, OCR_SOURCE_S3_PREFIX
+from src.database import get_db_connection
+from src.dependencies import get_current_api_key
+from services.ocr_service import extract_text_from_image_bytes_api
+from src.utils import calculate_image_similarity, calculate_text_similarity
 
 logger = logging.getLogger(__name__)
 router = APIRouter(

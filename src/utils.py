@@ -115,5 +115,7 @@ def calculate_text_similarity(text1: str, text2: str) -> float:
         return 1.0
     if not text1 or not text2: # One empty
         return 0.0
+    if text1.lower() in text2.lower():
+        return 1.0
     # Use .lower() to make the comparison case-insensitive
     return difflib.SequenceMatcher(None, text1.lower(), text2.lower()).ratio()

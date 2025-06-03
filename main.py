@@ -8,11 +8,10 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 # --- Import configurations and modules ---
-# Ensure config is imported first if other modules depend on its loaded values at import time
-from . import config # To ensure S3_CLIENT and other configs are initialized
-from .database import check_db_initialized, SQLITE_DB_PATH # SQLITE_DB_PATH for health check
-from .routers import text_match, image_match
-from .services import ocr_service # To ensure EASYOCR_API_READER is initialized
+from src import config # To ensure S3_CLIENT and other configs are initialized
+from src.database import check_db_initialized, SQLITE_DB_PATH # SQLITE_DB_PATH for health check
+from routers import text_match, image_match
+from services import ocr_service # To ensure EASYOCR_API_READER is initialized
 
 if not config.API_KEY:
     logger.warning(

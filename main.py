@@ -23,7 +23,7 @@ if not ocr_service.EASYOCR_API_READER:
     logger.warning("EASYOCR_API_READER not initialized in ocr_service. Text extraction for image matching might fail.")
 
 # --- FastAPI App Initialization ---
-app = FastAPI(title="S3 Image OCR Service", version="1.0.0")
+app = FastAPI(title="TM Image OCR Service", version="1.0.0")
 
 # Call check on startup (optional, for early warning)
 check_db_initialized()

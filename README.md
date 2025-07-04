@@ -106,7 +106,7 @@ Refer to the "Environment Variables" section for setting up the `API_KEY`.
   - **Query Parameters**:
     - `similarity_threshold` (float, optional, default: 0.6): Minimum combined similarity score.
   - **Request Body**: Form data with `uploaded_file` (file part).
-  - **Response (`FindSimilarImagesResponse`)**:
+  - **Response (`FindSimilarImagesResponse`)**s:
     ```json
     {
       "uploaded_filename": "my_test_image.jpg",

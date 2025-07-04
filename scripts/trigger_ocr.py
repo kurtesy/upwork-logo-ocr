@@ -16,19 +16,20 @@ from dotenv import load_dotenv
 import cv2 # For image decoding for RapidOCR
 import numpy as np # For image decoding for RapidOCR
 
+os.environ['KMP_DUPLICATE_LIB_OK']='True'
 # --- OCR Library Imports (add as needed) ---
 try:
     import easyocr
     EASYOCR_AVAILABLE = True
     # Consider initializing the reader later or making it configurable
-    EASYOCR_READER = easyocr.Reader(['en', 'hi'], gpu=True, quantize=True)
+    EASYOCR_READER = easyocr.Reader(['en', 'hi'], gpu=False, quantize=False)
 except ImportError:
     EASYOCR_AVAILABLE = False
     easyocr = None # type: ignore
     EASYOCR_READER = None
 
 try:
-    from rapidocr_onnxruntime import RapidOCR
+    from rapidocr import RapidOCR
     RAPIDOCR_AVAILABLE = True
     RAPIDOCR_ENGINE = RapidOCR()
 except ImportError:
@@ -263,7 +264,7 @@ def process_images_from_s3_task(
     current_file_number = start_file_number  # Use the provided or default starting number
     # Safety break for the loop, e.g., if 'NoSuchKey' is never hit for some reason,
     # or if there are large gaps in the sequence.
-    MAX_SEQUENTIAL_FILES_TO_CHECK = 2000000 # Example: Check up to 20,000 files
+    MAX_SEQUENTIAL_FILES_TO_CHECK = 10000000 # Example: Check up to 20,000 files
     files_checked_in_sequence = 0
 
     logger.info(f"Starting sequential S3 scan from file number {current_file_number} under prefix {source_prefix}")
@@ -297,6 +298,8 @@ def process_images_from_s3_task(
 
                 # Convert to grayscale
                 grayscale_image_bytes = convert_to_grayscale(image_bytes)
+                grayscale_image_size_kb = len(grayscale_image_bytes) / 1024
+                logger.info(f"Grayscale image size for {object_key}: {grayscale_image_size_kb:.2f} KB")
 
                 # Determine relative path for destination (this will be just s3_filename if prefix is used correctly)
                 # The image_identifier should be the unique part of the name, e.g., "5865351.0.jpeg"
@@ -339,7 +342,7 @@ def process_images_from_s3_task(
             except ClientError as e:
                 error_code = e.response.get("Error", {}).get("Code")
                 if error_code == 'NoSuchKey':
-                    logger.info(f"S3 object not found: {object_key}. Continuing to check next file number.")
+                    # logger.info(f"S3 object not found: {object_key}. Continuing to check next file number.")
                     # The finally block will increment current_file_number and files_checked_in_sequence.
                     continue # Continue to the next iteration of the while loop
                 elif error_code == 'AccessDenied':
@@ -419,6 +422,8 @@ def process_images(source_dir: str) -> Dict[str, Any]:
 
                 # Convert to grayscale and save
                 grayscale_image_bytes = convert_to_grayscale(image_bytes)
+                grayscale_image_size_kb = len(grayscale_image_bytes) / 1024
+                logger.info(f"Grayscale image size for {filename}: {grayscale_image_size_kb:.2f} KB")
 
                 base_filename, _ = os.path.splitext(filename)
                 grayscale_image_path = os.path.join(LOCAL_GRAYSCALE_DESTINATION_DIR, f"{base_filename}.jpeg")

@@ -71,7 +71,7 @@ def _get_ocr_text_matches(
 @router.get("/text-match", response_model=models.LogoMatchResponse)
 async def find_matching_logos(
     query_text: str = Query(..., min_length=1, description="The text to search for in OCR results."),
-    similarity_threshold: float = Query(0.6, ge=0.0, le=1.0, description="Minimum similarity ratio (0.0 to 1.0) to consider a match."),
+    similarity_threshold: float = Query(0.9, ge=0.0, le=1.0, description="Minimum similarity ratio (0.0 to 1.0) to consider a match."),
     api_key: str = Depends(get_current_api_key)
 ):
     conn = get_db_connection()

@@ -1,19 +1,18 @@
 import logging
 import sqlite3
 from typing import List, Tuple
-import os
 
 import numpy as np
 import cv2
 from fastapi import APIRouter, Query, File, UploadFile, Depends, HTTPException
-from botocore.exceptions import ClientError
 
 import src.models as models
-from src.config import S3_CLIENT, GRAYSCALE_BUCKET_NAME, GRAYSCALE_S3_PREFIX, OCR_SOURCE_S3_PREFIX
+from src.config import S3_CLIENT, OCR_SOURCE_S3_PREFIX, FAISS_INDEX_PATH, KEY_MAP_PATH
 from src.database import get_db_connection
 from src.dependencies import get_current_api_key
 from services.ocr_service import extract_text_from_image_bytes_api
-from src.utils import calculate_image_similarity, calculate_text_similarity
+from src.utils import calculate_text_similarity
+from services.image_similarity_service import ImageSimilarityService
 
 logger = logging.getLogger(__name__)
 router = APIRouter(
@@ -21,8 +20,15 @@ router = APIRouter(
     tags=["OCR Match"],
 )
 
+# --- Initialize Image Similarity Service ---
+# This service is loaded once at startup and shared across requests.
+image_similarity_service = ImageSimilarityService()
+image_similarity_service.load_index(FAISS_INDEX_PATH, KEY_MAP_PATH)
+
+
 def _get_ocr_matching_identifiers(
-    db_cursor: sqlite3.Cursor, query_text: str, text_similarity_threshold: float
+    db_cursor: sqlite3.Cursor, query_text: str, text_similarity_threshold: float,
+    max_results_cap: int = 20
 ) -> Tuple[List[str], int, List[str]]:
     logger.debug(f"DB Helper: Finding matching identifiers for query: '{query_text}', threshold: {text_similarity_threshold}")
     matching_identifiers: List[str] = []
@@ -35,6 +41,10 @@ def _get_ocr_matching_identifiers(
 
         db_cursor.execute("SELECT image_identifier, extracted_text FROM ocr_results WHERE extracted_text IS NOT NULL AND extracted_text != ''")
         for entry in db_cursor.fetchall():
+            if len(matching_identifiers) >= max_results_cap: break
+            if query_text in entry["extracted_text"]:
+                matching_identifiers.append(entry["image_identifier"])
+                continue
             similarity = calculate_text_similarity(query_text, entry["extracted_text"])
             if similarity >= text_similarity_threshold:
                 matching_identifiers.append(entry["image_identifier"])
@@ -43,116 +53,105 @@ def _get_ocr_matching_identifiers(
         logger.error(errors[-1], exc_info=True)
     return matching_identifiers, total_ocr_entries_in_db, errors
 
-def _find_similar_images_from_s3_candidates(
-    uploaded_image_np: np.ndarray, uploaded_filename: str, candidate_s3_keys: List[str],
-    image_similarity_threshold: float, max_results_cap: int = 20
-) -> Tuple[List[models.ImageSimilarityInfo], List[str]]:
-    if not calculate_image_similarity:
-        raise HTTPException(status_code=501, detail="Image similarity utility not available.")
-    if not S3_CLIENT:
-        return [], ["S3 client not initialized. Check AWS configuration."]
-
-    errors: List[str] = []
-    similar_images_found: List[models.ImageSimilarityInfo] = []
-
-    for s3_key in candidate_s3_keys:
-        if len(similar_images_found) >= max_results_cap: break
-        try:
-            s3_image_bytes = None
-            conn_cache = get_db_connection()
-            try:
-                cursor_cache = conn_cache.cursor()
-                cursor_cache.execute("SELECT image_bytes FROM s3_image_cache WHERE s3_key = ?", (s3_key,))
-                cached = cursor_cache.fetchone()
-                if cached: s3_image_bytes = cached["image_bytes"]
-                else:
-                    s3_response = S3_CLIENT.get_object(Bucket=GRAYSCALE_BUCKET_NAME, Key=s3_key)
-                    s3_image_bytes = s3_response['Body'].read()
-                    cursor_cache.execute("INSERT OR REPLACE INTO s3_image_cache (s3_key, image_bytes, timestamp) VALUES (?, ?, CURRENT_TIMESTAMP)", (s3_key, s3_image_bytes))
-                    conn_cache.commit()
-            except sqlite3.Error as db_err:
-                logger.error(f"SQLite cache error for {s3_key}: {db_err}", exc_info=True)
-                if s3_image_bytes is None: # Fallback if cache failed before fetch
-                    s3_response = S3_CLIENT.get_object(Bucket=GRAYSCALE_BUCKET_NAME, Key=s3_key)
-                    s3_image_bytes = s3_response['Body'].read()
-            finally:
-                if conn_cache: conn_cache.close()
-
-            if not s3_image_bytes:
-                errors.append(f"Could not obtain image bytes for S3 key: {s3_key}"); continue
-
-            s3_image_np = cv2.imdecode(np.frombuffer(s3_image_bytes, np.uint8), cv2.IMREAD_UNCHANGED)
-            if s3_image_np is None or s3_image_np.size == 0:
-                errors.append(f"Could not decode S3 image: {s3_key}"); continue
-
-            similarity_scores = calculate_image_similarity(uploaded_image_np, s3_image_np)
-            if similarity_scores and similarity_scores["combined_similarity"] >= image_similarity_threshold:
-                key_for_response = s3_key.replace(GRAYSCALE_S3_PREFIX, "", 1).replace("grayscale/", "original/", 1) # Adjust based on actual prefix structure
-                # A more robust way to get original key might be needed if prefixes are complex
-                original_identifier = os.path.basename(s3_key) # Assuming s3_key is like 'images/grayscale/filename.jpeg'
-                key_for_response = f"{OCR_SOURCE_S3_PREFIX.rstrip('/')}/{original_identifier}".replace(GRAYSCALE_S3_PREFIX, OCR_SOURCE_S3_PREFIX,1)
-
-                similar_images_found.append(models.ImageSimilarityInfo(s3_image_key=key_for_response, **similarity_scores))
-        except ClientError as e:
-            if e.response.get("Error", {}).get("Code") == 'NoSuchKey': logger.info(f"S3 object not found: {s3_key}")
-            else: errors.append(f"S3 ClientError for {s3_key}: {e}"); logger.error(errors[-1])
-        except Exception as e:
-            errors.append(f"Unexpected error processing S3 image {s3_key}: {e}"); logger.error(errors[-1], exc_info=True)
-    return similar_images_found, errors
-
 @router.post("/image-match", response_model=models.FindSimilarImagesResponse)
 async def find_similar_images_in_s3(
-    uploaded_file: UploadFile = File(..., description="Grayscale image (JPEG or PNG) to compare."),
-    image_similarity_threshold: float = Query(0.6, ge=0.0, le=1.0, alias="imageSimilarityThreshold"),
-    text_match_similarity_threshold: float = Query(0.5, ge=0.0, le=1.0, alias="textMatchSimilarityThreshold"),
+    uploaded_file: UploadFile = File(..., description="Image (JPEG or PNG) to find matches for."),
+    top_k: int = Query(10, ge=1, le=50, description="Number of similar images to return."),
     api_key: str = Depends(get_current_api_key)
 ):
-    if not S3_CLIENT: raise HTTPException(status_code=503, detail="S3 client not available.")
+    if not image_similarity_service.index:
+        raise HTTPException(status_code=503, detail="Image similarity search is not available. Index not loaded.")
+
     uploaded_filename = uploaded_file.filename or "N/A"
     errors: List[str] = []
     similar_images: List[models.ImageSimilarityInfo] = []
-    conn = None
+
     try:
         contents = await uploaded_file.read()
-        query_text_from_upload = extract_text_from_image_bytes_api(contents)
-        candidate_s3_keys: List[str] = []
+        # 1. Extract features from the uploaded image
+        query_features = image_similarity_service.extract_features(contents)
 
-        if query_text_from_upload:
-            conn = get_db_connection()
-            matched_ids, _, db_errs = _get_ocr_matching_identifiers(
-                conn.cursor(), query_text_from_upload, text_match_similarity_threshold
-            )
-            errors.extend(db_errs)
-            for identifier in matched_ids:
-                candidate_s3_keys.append(f"{GRAYSCALE_S3_PREFIX.rstrip('/')}/{identifier}")
+        # 2. Search for the top_k most similar images
+        search_results = image_similarity_service.search(query_features, top_k=top_k)
 
-        uploaded_image_np = cv2.imdecode(np.frombuffer(contents, np.uint8), cv2.IMREAD_UNCHANGED)
-        if uploaded_image_np is None or uploaded_image_np.size == 0:
-            raise HTTPException(status_code=400, detail="Invalid image format for uploaded file.")
+        # 3. Format the results for the response
+        for s3_key, distance in search_results:
+            # For normalized vectors, cosine similarity = 1 - (distance^2 / 2)
+            # This converts the L2 distance from Faiss back to a cosine similarity score [0, 1]
+            similarity_score = 1 - (distance**2) / 2
 
-        if candidate_s3_keys:
-            s3_sim_imgs, s3_errs = _find_similar_images_from_s3_candidates(
-                uploaded_image_np, uploaded_filename, candidate_s3_keys, image_similarity_threshold
-            )
-            similar_images.extend(s3_sim_imgs); errors.extend(s3_errs)
+            # Reconstruct the original S3 key from the grayscale key
+            original_identifier = s3_key.split('/')[-1]
+            key_for_response = f"{OCR_SOURCE_S3_PREFIX.rstrip('/')}/{original_identifier}"
+
+            similar_images.append(models.ImageSimilarityInfo(
+                s3_image_key=key_for_response,
+                combined_similarity=similarity_score,
+                shape_similarity=similarity_score, # Placeholder, as ResNet combines features
+                color_similarity=similarity_score  # Placeholder
+            ))
+
     except Exception as e:
         logger.error(f"Error in find_similar_images_in_s3 for {uploaded_filename}: {e}", exc_info=True)
-        errors.append(f"Could not process request: {str(e)}") # Avoid raising HTTPException here to return partial results/errors
-    finally:
-        if conn: conn.close()
+        errors.append(f"Could not process request: {str(e)}")
+
     return models.FindSimilarImagesResponse(uploaded_filename=uploaded_filename, similar_images=similar_images, errors=errors)
 
 @router.post("/bulk-image-match", response_model=List[models.FindSimilarImagesResponse])
 async def bulk_find_similar_images_in_s3(
     uploaded_files: List[UploadFile] = File(..., description="List of up to 100 images."),
-    image_similarity_threshold: float = Query(0.6, ge=0.0, le=1.0, alias="imageSimilarityThreshold"),
-    text_match_similarity_threshold: float = Query(0.5, ge=0.0, le=1.0, alias="textMatchSimilarityThreshold"),
+    top_k: int = Query(10, ge=1, le=50, description="Number of similar images to return per uploaded file."),
     api_key: str = Depends(get_current_api_key)
 ):
     if len(uploaded_files) > 100: raise HTTPException(status_code=413, detail="Max 100 images.")
     results = []
     for up_file in uploaded_files:
+        # Call the single-image endpoint with keyword arguments for correctness
         results.append(await find_similar_images_in_s3(
-            up_file, image_similarity_threshold, text_match_similarity_threshold, api_key # api_key passed for consistency, though Depends handles it
+            uploaded_file=up_file,
+            top_k=top_k,
+            api_key=api_key
         ))
     return results
+
+@router.post("/text-to-image-search", response_model=models.FindSimilarImagesResponse)
+async def find_similar_images_from_text(
+    query_text: str = Query(..., min_length=3, max_length=100, description="Text description to find matching images for."),
+    top_k: int = Query(10, ge=1, le=50, description="Number of similar images to return."),
+    api_key: str = Depends(get_current_api_key)
+):
+    """
+    Searches for images that match a given text description using CLIP.
+    """
+    if not image_similarity_service.index:
+        raise HTTPException(status_code=503, detail="Image similarity search is not available. Index not loaded.")
+
+    errors: List[str] = []
+    similar_images: List[models.ImageSimilarityInfo] = []
+
+    try:
+        # 1. Extract features from the text query using CLIP's text encoder
+        query_features = image_similarity_service.extract_text_features(query_text)
+
+        # 2. Search the Faiss index for the most similar image vectors
+        search_results = image_similarity_service.search(query_features, top_k=top_k)
+
+        # 3. Format the results for the response
+        for s3_key, distance in search_results:
+            # Convert L2 distance to cosine similarity
+            similarity_score = 1 - (distance**2) / 2
+
+            original_identifier = s3_key.split('/')[-1]
+            key_for_response = f"{OCR_SOURCE_S3_PREFIX.rstrip('/')}/{original_identifier}"
+
+            similar_images.append(models.ImageSimilarityInfo(
+                s3_image_key=key_for_response,
+                combined_similarity=similarity_score,
+                shape_similarity=similarity_score,
+                color_similarity=similarity_score
+            ))
+    except Exception as e:
+        logger.error(f"Error in find_similar_images_from_text for query '{query_text}': {e}", exc_info=True)
+        errors.append(f"Could not process request: {str(e)}")
+
+    return models.FindSimilarImagesResponse(uploaded_filename=f"text_query: '{query_text}'", similar_images=similar_images, errors=errors)

@@ -24,4 +24,4 @@ else
 fi
 
 echo "Launching Uvicorn server with main.py..."
-python main.py
+nohup python main.py 2>&1 &

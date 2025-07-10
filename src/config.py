@@ -22,8 +22,8 @@ GRAYSCALE_S3_PREFIX = os.getenv("GRAYSCALE_S3_PREFIX", "images/grayscale/")
 OCR_SOURCE_BUCKET_NAME = os.getenv("SOURCE_BUCKET_NAME", "newbucket-trademark")
 OCR_SOURCE_S3_PREFIX = os.getenv("SOURCE_PREFIX", "images/original/")
 
-FAISS_INDEX_PATH = os.getenv("FAISS_INDEX_PATH", "image_index.faiss")
-KEY_MAP_PATH = os.getenv("KEY_MAP_PATH", "index_to_key_map.pkl")
+FAISS_INDEX_PATH = os.getenv("FAISS_INDEX_PATH", "image_index.faiss.tmp")
+KEY_MAP_PATH = os.getenv("KEY_MAP_PATH", "index_to_key_map.pkl.tmp")
 
 # --- S3 Client Initialization ---
 S3_CLIENT = None

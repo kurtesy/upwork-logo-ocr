@@ -18,138 +18,199 @@ from services.image_similarity_service import ImageSimilarityService
 # --- Load environment variables ---
 load_dotenv()
 
-# --- S3 Client Initialization ---
-AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID")
-AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")
-AWS_DEFAULT_REGION = os.getenv("AWS_DEFAULT_REGION")
-
-# --- Configuration ---
-# These should point to the S3 location of your original, high-quality images.
-ORIGINAL_IMAGE_BUCKET = os.getenv("ORIGINAL_IMAGE_BUCKET", "newbucket-trademark")
-ORIGINAL_IMAGE_PREFIX = os.getenv("ORIGINAL_IMAGE_PREFIX", "images/original/")
-
-FAISS_INDEX_PATH = os.getenv("FAISS_INDEX_PATH", "image_index.faiss")
-KEY_MAP_PATH = os.getenv("KEY_MAP_PATH", "index_to_key_map.pkl")
-BATCH_SIZE = 1000  # Process 1000 images at a time to conserve memory
-CHECKPOINT_INTERVAL = 10  # Save a checkpoint to disk every 10 batches
-
 # --- Logging Setup ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-S3_CLIENT = None
-if AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY and AWS_DEFAULT_REGION:
-    try:
-        S3_CLIENT = boto3.client('s3')
-        logger.info("S3 client initialized successfully.")
-    except Exception as e:
-        logger.error("Failed to initialize S3 client.", exc_info=True)
-else:
-    logger.warning("AWS credentials or region not fully configured. S3 operations will fail.")
 
-
-def _save_checkpoint(index: faiss.Index, key_map: list, index_path: str, map_path: str):
+class IndexBuilder:
     """
-    Saves the current index and key map to temporary files for resilience.
-    This prevents loss of progress on very long indexing jobs.
+    Encapsulates the logic for building a Faiss index from images stored in S3.
     """
-    tmp_index_path = index_path + ".tmp"
-    tmp_map_path = map_path + ".tmp"
+    def __init__(self):
+        """Initializes the IndexBuilder, loading configuration and services."""
+        # --- Configuration ---
+        self.original_image_bucket = os.getenv("ORIGINAL_IMAGE_BUCKET", "newbucket-trademark")
+        self.original_image_prefix = os.getenv("ORIGINAL_IMAGE_PREFIX", "images/original/")
+        self.faiss_index_path = os.getenv("FAISS_INDEX_PATH", "image_index.faiss")
+        self.key_map_path = os.getenv("KEY_MAP_PATH", "index_to_key_map.pkl")
+        self.batch_size = int(os.getenv("BATCH_SIZE", 1000))
+        self.checkpoint_interval = int(os.getenv("CHECKPOINT_INTERVAL", 10))
 
-    logger.info(f"Saving checkpoint with {index.ntotal} vectors to {tmp_index_path}...")
-    faiss.write_index(index, tmp_index_path)
+        # --- Service and Client Initialization ---
+        self.s3_client = self._initialize_s3_client()
+        self.similarity_service = ImageSimilarityService()
 
-    with open(tmp_map_path, 'wb') as f:
-        pickle.dump(key_map, f)
-    logger.info("Checkpoint saved successfully.")
+        # --- State Variables ---
+        self.index = None
+        self.s3_key_map = []
+        self.batch_features = []
+        self.batch_keys = []
+        self.batch_num = 0
+        self.processed_count = 0
 
+    def _initialize_s3_client(self):
+        """Initializes and returns a Boto3 S3 client."""
+        aws_access_key_id = os.getenv("AWS_ACCESS_KEY_ID")
+        aws_secret_access_key = os.getenv("AWS_SECRET_ACCESS_KEY")
+        aws_default_region = os.getenv("AWS_DEFAULT_REGION")
 
-def build_index():
-    """
-    Reads images directly from an S3 bucket, extracts features using CLIP, and builds a Faiss index.
-    """
-    logger.info(f"Starting image index build from s3://{ORIGINAL_IMAGE_BUCKET}/{ORIGINAL_IMAGE_PREFIX}")
-    if not S3_CLIENT:
-        logger.error("S3 client not initialized. Cannot build index.")
-        return
+        if not (aws_access_key_id and aws_secret_access_key and aws_default_region):
+            logger.warning("AWS credentials or region not fully configured. S3 operations might fail.")
+            return None
+        try:
+            client = boto3.client('s3')
+            logger.info("S3 client initialized successfully.")
+            return client
+        except Exception as e:
+            logger.error("Failed to initialize S3 client.", exc_info=True)
+            return None
 
-    # 1. Initialize the similarity service to get access to the CLIP model
-    similarity_service = ImageSimilarityService()
-    paginator = S3_CLIENT.get_paginator('list_objects_v2')
-    pages = paginator.paginate(Bucket=ORIGINAL_IMAGE_BUCKET, Prefix=ORIGINAL_IMAGE_PREFIX)
+    def _load_checkpoint(self):
+        """Loads index and key map from checkpoint files if they exist."""
+        tmp_index_path = self.faiss_index_path + ".tmp"
+        tmp_map_path = self.key_map_path + ".tmp"
 
-    index = None
-    s3_key_map = []
-    batch_features = []
-    batch_keys = []
-    batch_num = 0
-    processed_count = 0
+        if os.path.exists(tmp_index_path) and os.path.exists(tmp_map_path):
+            try:
+                logger.info(f"Resuming from checkpoint: loading {tmp_index_path} and {tmp_map_path}")
+                self.index = faiss.read_index(tmp_index_path)
+                with open(tmp_map_path, 'rb') as f:
+                    self.s3_key_map = pickle.load(f)
 
-    try:
-        for page in pages:
-            if 'Contents' not in page:
-                continue
+                # Update state to reflect resumed progress
+                self.processed_count = self.index.ntotal
+                self.batch_num = self.processed_count // self.batch_size
 
-            for s3_object in page['Contents']:
-                s3_key = s3_object['Key']
-                # Skip "directory" objects and non-images
-                if s3_key.endswith('/') or not (s3_key.lower().endswith(('.jpg', '.jpeg', '.png'))):
+                logger.info(f"Resumed successfully. Index has {self.index.ntotal} vectors. Starting from batch number {self.batch_num + 1}.")
+                return set(self.s3_key_map)
+            except Exception as e:
+                logger.error(f"Failed to load checkpoint files: {e}. Starting from scratch.", exc_info=True)
+                self.index = None
+                self.s3_key_map = []
+
+    def _save_index_and_map(self, final: bool = False):
+        """
+        Saves the current index and key map. If final, renames temp files to permanent ones.
+        """
+        if not self.index or self.index.ntotal == 0:
+            logger.warning("Index is empty or not initialized. Nothing to save.")
+            return
+
+        tmp_index_path = self.faiss_index_path + ".tmp"
+        tmp_map_path = self.key_map_path + ".tmp"
+
+        action = "Saving final index" if final else "Saving checkpoint"
+        logger.info(f"{action} with {self.index.ntotal} vectors to {tmp_index_path}...")
+
+        faiss.write_index(self.index, tmp_index_path)
+        with open(tmp_map_path, 'wb') as f:
+            pickle.dump(self.s3_key_map, f)
+
+        if final:
+            os.rename(tmp_index_path, self.faiss_index_path)
+            os.rename(tmp_map_path, self.key_map_path)
+            logger.info(f"Final index with {self.index.ntotal} vectors successfully saved to {self.faiss_index_path}")
+        else:
+            logger.info("Checkpoint saved successfully.")
+
+    def _process_batch(self):
+        """Processes the current batch of features and adds them to the Faiss index."""
+        if not self.batch_features:
+            return
+
+        assert self.index is not None, "Index should be initialized before processing a batch"
+
+        try:
+            features_np = np.array(self.batch_features).astype('float32')
+            self.index.add(features_np) # type: ignore
+            self.s3_key_map.extend(self.batch_keys)
+            logger.info(f"Added {len(self.batch_features)} vectors to index. Total vectors: {self.index.ntotal}")
+
+            self.batch_features.clear()
+            self.batch_keys.clear()
+            self.batch_num += 1
+
+            if self.batch_num % self.checkpoint_interval == 0:
+                self._save_index_and_map(final=False)
+        except Exception as e:
+            logger.error(f"Failed to process batch: {e}", exc_info=True)
+
+    def _process_s3_object(self, s3_key: str):
+        """Downloads an S3 object, extracts features, and adds to the current batch."""
+        try:
+            self.processed_count += 1
+            logger.info(f"Processing S3 object #{self.processed_count}: {s3_key}")
+
+            s3_response = self.s3_client.get_object(Bucket=self.original_image_bucket, Key=s3_key) # type: ignore
+            image_bytes = s3_response['Body'].read()
+            features = self.similarity_service.extract_features(image_bytes)
+
+            if self.index is None:
+                dimension = features.shape[0]
+                logger.info(f"Initializing index with feature dimension {dimension}.")
+                self.index = faiss.IndexFlatL2(dimension)
+
+            self.batch_features.append(features)
+            self.batch_keys.append(s3_key)
+        except Exception as e:
+            logger.error(f"Could not process image {s3_key}: {e}")
+
+    def run(self):
+        """
+        Main method to build the Faiss index from images in S3.
+        """
+        if not self.s3_client:
+            logger.error("S3 client not initialized. Cannot build index.")
+            return
+
+        # Load from checkpoint if available and get a set of already processed keys
+        self._load_checkpoint()
+        processed_keys = self.s3_key_map
+        if processed_keys:
+            logger.info(f"Skipping {len(processed_keys)} already processed S3 objects found in checkpoint.")
+
+        logger.info(f"Starting image index build from s3://{self.original_image_bucket}/{self.original_image_prefix}")
+
+        
+        paginator = self.s3_client.get_paginator('list_objects_v2')
+        pages = paginator.paginate(Bucket=self.original_image_bucket, Prefix=self.original_image_prefix)
+
+        try:
+            total_s3_objects = 0
+            for page in pages:
+                if 'Contents' not in page:
                     continue
 
-                processed_count += 1
-                logger.info(f"Processing S3 object #{processed_count}: {s3_key}")
+                for s3_object in page['Contents']:
+                    total_s3_objects += 1
+                    s3_key = s3_object['Key']
+                    if s3_key.endswith('/') or not any(s3_key.lower().endswith(ext) for ext in ('.jpg', '.jpeg', '.png')):
+                        continue
 
-                try:
-                    s3_response = S3_CLIENT.get_object(Bucket=ORIGINAL_IMAGE_BUCKET, Key=s3_key)
-                    image_bytes = s3_response['Body'].read()
-                    features = similarity_service.extract_features(image_bytes)
+                    if s3_key in processed_keys:
+                        continue
 
-                    # Initialize index with dimension from first successful feature extraction
-                    if index is None:
-                        dimension = features.shape[0]
-                        logger.info(f"CLIP feature dimension is {dimension}.")
-                        index = faiss.IndexFlatL2(dimension)
+                    self._process_s3_object(s3_key)
 
-                    batch_features.append(features)
-                    batch_keys.append(s3_key)
+                    if len(self.batch_features) >= self.batch_size:
+                        self._process_batch()
 
-                    # When batch is full, add to index and reset
-                    if len(batch_features) >= BATCH_SIZE:
-                        features_np = np.array(batch_features).astype('float32')
-                        index.add(features_np) # type: ignore
-                        s3_key_map.extend(batch_keys)
-                        logger.info(f"Added {len(batch_features)} vectors to index. Total vectors: {index.ntotal}")
+            # Process any remaining features in the last batch
+            if self.batch_features:
+                self._process_batch()
 
-                        batch_features.clear()
-                        batch_keys.clear()
-                        batch_num += 1
+            # Save the final index
+            self._save_index_and_map(final=True)
+            if not self.index or self.index.ntotal == len(processed_keys):
+                logger.warning(f"No new images were found to be indexed out of {total_s3_objects} S3 objects checked.")
 
-                        if batch_num % CHECKPOINT_INTERVAL == 0:
-                            _save_checkpoint(index, s3_key_map, FAISS_INDEX_PATH, KEY_MAP_PATH)
+        except ClientError as e:
+            logger.error(f"A critical S3 error occurred during index build: {e}", exc_info=True)
+        except Exception as e:
+            logger.error(f"An unexpected error occurred during index build: {e}", exc_info=True)
 
-                except Exception as e:
-                    logger.error(f"Could not process image {s3_key}: {e}")
-
-        # Add any remaining features from the last partial batch
-        if index and batch_features:
-            features_np = np.array(batch_features).astype('float32')
-            index.add(features_np) # type: ignore
-            s3_key_map.extend(batch_keys)
-            logger.info(f"Added final {len(batch_features)} vectors to index. Total vectors: {index.ntotal}")
-
-        # Save the final index
-        if index and index.ntotal > 0:
-            logger.info("Processing complete. Saving final index and map...")
-            _save_checkpoint(index, s3_key_map, FAISS_INDEX_PATH, KEY_MAP_PATH)
-            os.rename(FAISS_INDEX_PATH + ".tmp", FAISS_INDEX_PATH)
-            os.rename(KEY_MAP_PATH + ".tmp", KEY_MAP_PATH)
-            logger.info(f"Final index with {index.ntotal} vectors successfully saved to {FAISS_INDEX_PATH}")
-        else:
-            logger.warning("No images were processed or no features were added to the index. Nothing to save.")
-    except ClientError as e:
-        logger.error(f"A critical S3 error occurred during index build: {e}", exc_info=True)
-    except Exception as e:
-        logger.error(f"An unexpected error occurred during index build: {e}", exc_info=True)
 
 if __name__ == "__main__":
-    build_index()
+    builder = IndexBuilder()
+    builder.run()

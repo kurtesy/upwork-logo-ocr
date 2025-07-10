@@ -2,7 +2,7 @@ import logging
 import sqlite3
 from typing import List, Tuple
 
-from fastapi import APIRouter, Query, Depends
+from fastapi import APIRouter, Depends, Query
 
 import src.models as models
 from src.config import OCR_SOURCE_BUCKET_NAME, OCR_SOURCE_S3_PREFIX, AWS_DEFAULT_REGION
@@ -15,6 +15,12 @@ router = APIRouter(
     prefix="/ocr",
     tags=["OCR Match"],
 )
+
+SIMILARITY_LEVEL_MAPPING = {
+    models.SimilarityLevel.HIGH: 0.9,
+    models.SimilarityLevel.MEDIUM: 0.7,
+    models.SimilarityLevel.LOW: 0.5,
+}
 
 def _get_ocr_text_matches(
     db_cursor: sqlite3.Cursor,
@@ -71,9 +77,13 @@ def _get_ocr_text_matches(
 @router.get("/text-match", response_model=models.LogoMatchResponse)
 async def find_matching_logos(
     query_text: str = Query(..., min_length=1, description="The text to search for in OCR results."),
-    similarity_threshold: float = Query(0.9, ge=0.0, le=1.0, description="Minimum similarity ratio (0.0 to 1.0) to consider a match."),
+    similarity_level: models.SimilarityLevel = Query(
+        default=models.SimilarityLevel.HIGH,
+        description="Similarity level to consider a match. 'high' (0.9), 'medium' (0.7), 'low' (0.5)."
+    ),
     api_key: str = Depends(get_current_api_key)
 ):
+    similarity_threshold = SIMILARITY_LEVEL_MAPPING[similarity_level]
     conn = get_db_connection()
     try:
         matching_logos, processed_files, errors = _get_ocr_text_matches(
@@ -81,9 +91,14 @@ async def find_matching_logos(
         )
     finally:
         conn.close()
+
     return models.LogoMatchResponse(
-        query_text=query_text, similarity_threshold=similarity_threshold,
-        matching_logos=matching_logos, processed_ocr_files=processed_files, errors=errors
+        query_text=query_text,
+        similarity_level=similarity_level,
+        similarity_threshold=similarity_threshold,
+        matching_logos=matching_logos,
+        processed_ocr_files=processed_files,
+        errors=errors,
     )
 
 @router.post("/bulk-text-match", response_model=models.BulkLogoMatchResponse)
@@ -91,11 +106,12 @@ async def bulk_find_matching_logos(
     request_data: models.BulkLogoMatchRequest, api_key: str = Depends(get_current_api_key)
 ):
     results: List[models.BulkLogoMatchResult] = []
+    similarity_threshold = SIMILARITY_LEVEL_MAPPING[request_data.similarity_level]
     conn = get_db_connection()
     try:
         for query_item in request_data.queries:
             logos, files, errors = _get_ocr_text_matches(
-                conn.cursor(), query_item.query_text, request_data.similarity_threshold
+                conn.cursor(), query_item.query_text, similarity_threshold
             )
             results.append(models.BulkLogoMatchResult(
                 query_text=query_item.query_text, matching_logos=logos,

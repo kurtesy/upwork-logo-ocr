@@ -1,9 +1,16 @@
+from enum import Enum
 from typing import List
 from pydantic import BaseModel
 from fastapi import Body
 
+class SimilarityLevel(str, Enum):
+    HIGH = "high"
+    MEDIUM = "medium"
+    LOW = "low"
+
 class LogoMatchResponse(BaseModel):
     query_text: str
+    similarity_level: SimilarityLevel
     similarity_threshold: float
     matching_logos: List[str]
     processed_ocr_files: int
@@ -25,7 +32,7 @@ class BulkLogoMatchQuery(BaseModel):
 
 class BulkLogoMatchRequest(BaseModel):
     queries: List[BulkLogoMatchQuery] = Body(..., max_items=100)
-    similarity_threshold: float = 0.7
+    similarity_level: SimilarityLevel = SimilarityLevel.HIGH
 
 class BulkLogoMatchResult(BaseModel):
     query_text: str

@@ -17,9 +17,9 @@ router = APIRouter(
 )
 
 SIMILARITY_LEVEL_MAPPING = {
-    models.SimilarityLevel.HIGH: 0.9,
-    models.SimilarityLevel.MEDIUM: 0.7,
-    models.SimilarityLevel.LOW: 0.5,
+    models.SimilarityLevel.HIGH: 0.8,
+    models.SimilarityLevel.MEDIUM: 0.5,
+    models.SimilarityLevel.LOW: 0.3,
 }
 
 def _get_ocr_text_matches(

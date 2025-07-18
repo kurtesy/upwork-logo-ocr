@@ -42,3 +42,6 @@ class BulkLogoMatchResult(BaseModel):
 
 class BulkLogoMatchResponse(BaseModel):
     results: List[BulkLogoMatchResult]
+
+class BulkImageUrlRequest(BaseModel):
+    image_urls: List[str] = Body(..., max_items=100, description="A list of up to 100 image URLs to search for.")

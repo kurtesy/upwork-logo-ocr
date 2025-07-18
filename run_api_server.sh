@@ -8,7 +8,7 @@
 PROJECT_DIR="/home/ec2-user/ocr-api" 
 
 # Name of the Conda environment
-CONDA_ENV_NAME="ocr-api-env"
+CONDA_ENV_NAME="conda-env"
 
 # Log file for the server
 LOG_FILE="server.logs"

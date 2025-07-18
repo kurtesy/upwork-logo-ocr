@@ -1,11 +1,13 @@
 import logging
 import pickle
 from typing import List, Tuple
+from io import BytesIO
 
 import faiss
 import clip
 import numpy as np
 import torch
+import cv2
 from PIL import Image
 
 logger = logging.getLogger(__name__)
@@ -44,6 +46,14 @@ class ImageSimilarityService:
             logger.error(f"Failed to load Faiss index or map from {index_path}/{map_path}: {e}", exc_info=True)
             self.index = None # Ensure index is None if loading fails
 
+    def _preprocess_for_shape_color(self, image_bytes: bytes) -> np.ndarray:
+        """Helper to load image bytes into an OpenCV-readable format."""
+        image_np = np.frombuffer(image_bytes, np.uint8)
+        img = cv2.imdecode(image_np, cv2.IMREAD_COLOR)
+        if img is None:
+            raise ValueError("Could not decode image from bytes.")
+        return img
+
     def extract_features(self, image_bytes: bytes) -> np.ndarray:
         """Extracts a feature vector from a single image's bytes."""
         from io import BytesIO
@@ -63,6 +73,43 @@ class ImageSimilarityService:
         features /= features.norm(dim=-1, keepdim=True)
         return features.squeeze().cpu().numpy()
 
+    def extract_color_features(self, image_bytes: bytes) -> np.ndarray:
+        """Extracts a color histogram from an image's bytes."""
+        img = self._preprocess_for_shape_color(image_bytes)
+        hsv_img = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+        # Using 50 bins for hue, 60 for saturation
+        hist = cv2.calcHist([hsv_img], [0, 1], None, [50, 60], [0, 180, 0, 256])
+        cv2.normalize(hist, hist, alpha=0, beta=1, norm_type=cv2.NORM_MINMAX)
+        return hist
+
+    def extract_shape_features(self, image_bytes: bytes) -> np.ndarray:
+        """Extracts shape features (main contour) from an image's bytes."""
+        img = self._preprocess_for_shape_color(image_bytes)
+        gray_img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        edges = cv2.Canny(gray_img, 50, 150)
+        contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if not contours:
+            return np.array([])
+        return max(contours, key=cv2.contourArea)
+
+    def compare_color_features(self, hist1: np.ndarray, hist2: np.ndarray) -> float:
+        """Compares two color histograms using correlation."""
+        if hist1.size == 0 or hist2.size == 0:
+            return 0.0
+        # HISTCMP_CORREL returns a value between -1 and 1. We normalize it to [0, 1].
+        score = cv2.compareHist(hist1.astype(np.float32), hist2.astype(np.float32), cv2.HISTCMP_CORREL)
+        return (score + 1) / 2
+
+    def compare_shape_features(self, contour1: np.ndarray, contour2: np.ndarray) -> float:
+        """Compares two contours using cv2.matchShapes."""
+        if contour1.size == 0 or contour2.size == 0:
+            return 0.0
+        # CONTOURS_MATCH_I1 returns a distance. Lower is better.
+        distance = cv2.matchShapes(contour1, contour2, cv2.CONTOURS_MATCH_I1, 0.0)
+        # Convert distance to a similarity score between 0 and 1.
+        similarity = 1.0 / (1.0 + distance)
+        return similarity
+
     def extract_text_features(self, text: str) -> np.ndarray:
         """Extracts a feature vector from a text string."""
         if not self.model:
@@ -73,7 +120,7 @@ class ImageSimilarityService:
         text_features /= text_features.norm(dim=-1, keepdim=True)
         return text_features.squeeze().cpu().numpy()
 
-    def search(self, query_features: np.ndarray, top_k: int = 10) -> List[Tuple[str, float]]:
+    def search(self, query_features: np.ndarray, top_k: int = 20) -> List[Tuple[str, float]]:
         """
         Searches the Faiss index for the top_k most similar images.
 

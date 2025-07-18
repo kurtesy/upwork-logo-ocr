@@ -184,8 +184,10 @@ class OcrProcessor:
             if img_cv2 is None:
                 logger.error("Failed to decode image for RapidOCR.")
                 return ""
-            result, _ = self.rapidocr_engine(img_cv2) # type: ignore
-            return " ".join([res[1] for res in result]) if result else ""
+            result = self.rapidocr_engine(img_cv2)
+            # The result from rapidocr is an object with a .txts attribute, not an iterable.
+            txts = getattr(result, 'txts', None)
+            return " ".join(txts) if txts else ""
         except Exception as e:
             logger.error(f"Error during RapidOCR: {e}", exc_info=True)
             return ""
@@ -254,7 +256,7 @@ class OcrProcessor:
             raise ConnectionError("S3 client not initialized.")
 
         current_file_num = self.start_file_number
-        MAX_SEQUENTIAL_CHECKS = 10000000
+        MAX_SEQUENTIAL_CHECKS = 100000000
         checked_count = 0
 
         logger.info(f"Starting sequential S3 scan from file number {current_file_num} under prefix {self.source_prefix}")

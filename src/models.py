@@ -10,9 +10,9 @@ class SimilarityLevel(str, Enum):
 
 class LogoMatchResponse(BaseModel):
     query_text: str
-    similarity_level: SimilarityLevel
+    similarity_level: List[SimilarityLevel]
     similarity_threshold: float
-    matching_logos: List[str]
+    matching_logos: List[str] = []
     processed_ocr_files: int
     errors: List[str] = []
 
@@ -21,6 +21,7 @@ class ImageSimilarityInfo(BaseModel):
     color_similarity: float
     shape_similarity: float
     combined_similarity: float
+    clip_similarity: float
 
 class FindSimilarImagesResponse(BaseModel):
     uploaded_filename: str
@@ -29,16 +30,17 @@ class FindSimilarImagesResponse(BaseModel):
 
 class BulkLogoMatchQuery(BaseModel):
     query_text: str
+    similarity_level: List[SimilarityLevel] = [SimilarityLevel.HIGH]
 
 class BulkLogoMatchRequest(BaseModel):
     queries: List[BulkLogoMatchQuery] = Body(..., max_items=100)
-    similarity_level: SimilarityLevel = SimilarityLevel.HIGH
 
 class BulkLogoMatchResult(BaseModel):
     query_text: str
     matching_logos: List[str]
     processed_ocr_files: int # This might be the total in DB, or specific to this query's context
     errors: List[str] = []
+
 
 class BulkLogoMatchResponse(BaseModel):
     results: List[BulkLogoMatchResult]

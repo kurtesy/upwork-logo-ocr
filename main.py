@@ -1,9 +1,18 @@
 import os
 import logging
 import uvicorn
-from contextlib import asynccontextmanager
-from fastapi import FastAPI, Request
 import time
+import asyncio
+from contextlib import asynccontextmanager
+from fastapi import FastAPI, Request, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+
+# --- Import configurations and modules ---
+from src import config # To ensure S3_CLIENT and other configs are initialized
+from src.database import check_db_initialized, SQLITE_DB_PATH
+from src.rate_limiter import RateLimiter # type: ignore
+from routers import text_match, image_match, admin
 
 # --- Logging Setup ---
 logging.basicConfig(
@@ -12,11 +21,10 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 logger = logging.getLogger(__name__)
+# Create a RateLimiter instance: 100 requests per 60 seconds per client IP.
+limiter = RateLimiter(max_requests=100, time_window=60)
 
-# --- Import configurations and modules ---
-from src import config # To ensure S3_CLIENT and other configs are initialized
-from src.database import check_db_initialized, SQLITE_DB_PATH
-from routers import text_match, image_match
+# --- Lifespan Functions ---
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -49,21 +57,38 @@ app = FastAPI(
     lifespan=lifespan
 )
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 @app.middleware("http")
-async def log_requests(request: Request, call_next):
+async def rate_limit_and_log_requests(request: Request, call_next):
     """
-    Middleware to log API requests, including method, path, response status,
-    and processing time.
+    Middleware to apply rate limiting and then log API requests.
     """
+    try:
+        await asyncio.to_thread(limiter, request)
+    except HTTPException as exc:
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={'detail': exc.detail}
+        )
+
     start_time = time.time()
     response = await call_next(request)
     process_time = time.time() - start_time
-    logger.info(f'"{request.method} {request.url.path}" {response.status_code} {process_time:.4f}s')
+    logger.info(
+        f'"{request.method} {request.url.path}" {response.status_code} {process_time:.4f}s - {request.client.host}') # type: ignore
     return response
 
 # --- Include Routers ---
 app.include_router(text_match.router)
 app.include_router(image_match.router)
+app.include_router(admin.router)
 
 @app.get("/", summary="Service Health Check", tags=["Default"])
 def root():

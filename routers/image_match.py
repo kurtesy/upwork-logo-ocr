@@ -148,30 +148,36 @@ async def _process_item_for_similarity(
     """
     errors: List[str] = []
     similar_images: List[models.ImageSimilarityInfo] = []
-    identifier = "N/A"
+    identifier: str
 
     try:
-        if isinstance(item, UploadFile):
-            identifier = item.filename or "N/A"
-            image_bytes = await item.read()
+        # The error indicates that `item` can be a `starlette.datastructures.UploadFile`,
+        # which is not a direct instance of `fastapi.UploadFile`. A more robust check
+        # is to use duck typing to see if it's a file-like object.
+        if hasattr(item, 'read') and callable(item.read): # type: ignore
+            identifier = getattr(item, 'filename', "N/A") or "N/A"
+            image_bytes = await item.read() # type: ignore
         else:  # It's a URL string
-            identifier = item
+            identifier = str(item)
             async with httpx.AsyncClient() as client:
-                response = await client.get(item)
+                response = await client.get(item) # type: ignore
                 response.raise_for_status()
                 image_bytes = response.content
 
-        similar_images, errors = await asyncio.to_thread(
+        similar_images, processing_errors = await asyncio.to_thread(
             _find_similar_images_with_reranking_sync,
             query_image_bytes=image_bytes,
             img_cnt=img_cnt,
             similarity_threshold=similarity_threshold
         )
+        errors.extend(processing_errors)
     except httpx.RequestError as e:
         err_msg = f"URL download failed: {identifier}: {e}"
         logger.error(err_msg)
         errors.append(err_msg)
     except Exception as e:
+        if 'identifier' not in locals():
+            identifier = "Unknown"
         logger.error(f"Processing error for {identifier}: {e}", exc_info=True)
         errors.append(f"Could not process request for {identifier}: {str(e)}")
 

@@ -19,10 +19,81 @@ router = APIRouter(
 
 SIMILARITY_LEVEL_MAPPING = {
     models.SimilarityLevel.HIGH: 0.8,
-    models.SimilarityLevel.MEDIUM: 0.5,
-    models.SimilarityLevel.LOW: 0.3,
+    models.SimilarityLevel.MEDIUM: 0.4,
+    models.SimilarityLevel.LOW: 0.1,
 }
 
+def _get_fuzzy_parts_for_token(token: str) -> set:
+    """Generates a set of FTS query parts for a single token."""
+    parts = set()
+    if not token:
+        return parts
+
+    # 1. Add a prefix search for the whole token.
+    parts.add(f'"{token}"*')
+
+    # 2. Add bigrams for more fuzzy matching.
+    if len(token) >= 2:
+        bigrams = {token[i:i+2] for i in range(len(token) - 1)}
+        parts.update(f'"{bg}"' for bg in bigrams)
+
+    # 3. Add trigrams for more precise fuzzy matching.
+    if len(token) >= 3:
+        trigrams = {token[i:i+3] for i in range(len(token) - 2)}
+        parts.update(f'"{tg}"' for tg in trigrams)
+    
+    return parts
+
+
+def _generate_fuzzy_query(query_text: str) -> str:
+    """
+    Generates a more comprehensive fuzzy FTS5 query from a user's query text.
+    It creates a query that searches for:
+    1. Individual words from the query using prefix, bigram, and trigram matching (joined by AND).
+    2. The entire query text with spaces removed, also using prefix, bigram, and trigram matching.
+    These two search strategies are joined by OR to maximize recall.
+
+    e.g., "Coca Cola" ->
+    '((("coca*" OR ...) AND ("cola*" OR ...))) OR ("cocacola*" OR ...)'
+    """
+    lower_query = query_text.lower()
+    words = lower_query.split()
+
+    if not words:
+        return ""
+
+    # --- Strategy 1: Match individual words ---
+    word_queries = []
+    for token in words:
+        parts = _get_fuzzy_parts_for_token(token)
+        if parts:
+            word_queries.append(f'({" OR ".join(sorted(list(parts)))})')
+
+    individual_word_query = ""
+    if word_queries:
+        # Join word queries with AND to ensure all words are considered.
+        individual_word_query = f'({" AND ".join(word_queries)})'
+
+    # --- Strategy 2: Match the whole query as a single token (no spaces) ---
+    # This helps find matches where words are concatenated, e.g., "CocaCola".
+    combined_query = ""
+    if len(words) > 1:
+        combined_token = "".join(words)
+        parts = _get_fuzzy_parts_for_token(combined_token)
+        if parts:
+            combined_query = f'({" OR ".join(sorted(list(parts)))})'
+
+    # --- Combine strategies ---
+    final_queries = []
+    if individual_word_query:
+        final_queries.append(individual_word_query)
+    if combined_query:
+        final_queries.append(combined_query)
+
+    if not final_queries:
+        return ""
+
+    return " OR ".join(final_queries)
 
 def _execute_match_query(
     db_cursor: sqlite3.Cursor,
@@ -43,12 +114,19 @@ def _execute_match_query(
     matching_logos: List[str] = []
     errors: List[str] = []
     try:
-        # Step 1: Use FTS5 to get a list of candidate rowids.
+        # Step 1: Use FTS5 with a fuzzy query to get a list of candidate rowids.
         # The FTS MATCH operator is much faster than a full table scan.
+        # We generate a fuzzy query to better handle typos and variations.
+        fuzzy_query = _generate_fuzzy_query(query_text)
+        if not fuzzy_query:
+            return [], []
+
         # We fetch more candidates than needed to allow for re-ranking.
         fts_query = "SELECT rowid FROM ocr_results_fts WHERE ocr_results_fts MATCH ? ORDER BY rank LIMIT ?;"
-        candidate_limit = max_results_cap * 5  # Fetch 5x candidates for re-ranking
-        db_cursor.execute(fts_query, (query_text, candidate_limit))
+        # Fetching a larger set of candidates for re-ranking improves accuracy.
+        # 100x the final cap is a reasonable trade-off between performance and recall.
+        candidate_limit = max_results_cap * 100
+        db_cursor.execute(fts_query, (fuzzy_query, candidate_limit))
         candidate_rowids = [row[0] for row in db_cursor.fetchall()]
 
         if not candidate_rowids:
@@ -105,8 +183,8 @@ async def find_matching_logos(
     request: Request,
     query_text: str = Query(..., min_length=1, description="The text to search for in OCR results."),
     similarity_level: List[models.SimilarityLevel] = Query(
-        default=[models.SimilarityLevel.HIGH],
-        description="Similarity level(s) to consider a match. 'high' (0.8), 'medium' (0.5), 'low' (0.3)."
+        default=[models.SimilarityLevel.LOW],
+        description="Similarity level(s) to consider a match. 'high' (0.8), 'medium' (0.4), 'low' (0.1)."
     ),
     max_results: int = Query(100, ge=1, le=500, description="Maximum number of matching logos to return."),
     api_key: str = Depends(get_current_api_key) 

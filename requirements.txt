@@ -1,0 +1,18 @@
+# This file may be used to create an environment using:
+# $ conda create --name <env> --file <this file>
+# platform: osx-64
+# created-by: conda 25.5.1
+# Channels:
+#  - pytorch
+#  - conda-forge
+#  - defaults
+uvicorn
+fastapi
+opencv
+python-dotenv
+sqlite>=3.45
+opencv
+easyocr
+pytorch
+torchvision
+torchaudio

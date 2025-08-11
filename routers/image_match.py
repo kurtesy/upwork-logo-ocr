@@ -77,30 +77,27 @@ def _find_similar_images_with_reranking_sync(
             s3_key, clip_distance = candidate_data
             source_s3_key = ""
             try:
-                # Download candidate image from S3
+                # # Download candidate image from S3
                 original_identifier = s3_key.split('/')[-1]
                 source_s3_key = f"{OCR_SOURCE_S3_PREFIX.rstrip('/')}/{original_identifier}"
                 
-                response = s3_client.get_object(Bucket=OCR_SOURCE_BUCKET_NAME, Key=source_s3_key) # type: ignore
-                candidate_image_bytes = response['Body'].read()
+                # response = s3_client.get_object(Bucket=OCR_SOURCE_BUCKET_NAME, Key=source_s3_key) # type: ignore
+                # candidate_image_bytes = response['Body'].read()
 
-                # Extract features for the candidate image
-                candidate_color_hist = image_similarity_service.extract_color_features(candidate_image_bytes)
-                candidate_shape_contour = image_similarity_service.extract_shape_features(candidate_image_bytes)
+                # # Extract features for the candidate image
+                # candidate_color_hist = image_similarity_service.extract_color_features(candidate_image_bytes)
+                # candidate_shape_contour = image_similarity_service.extract_shape_features(candidate_image_bytes)
 
-                # Calculate individual similarity scores
+                # # Calculate individual similarity scores
                 clip_similarity = 1 - (clip_distance**2) / 2
-                color_similarity = image_similarity_service.compare_color_features(query_color_hist, candidate_color_hist)
-                shape_similarity = image_similarity_service.compare_shape_features(query_shape_contour, candidate_shape_contour)
+                # color_similarity = image_similarity_service.compare_color_features(query_color_hist, candidate_color_hist)
+                # shape_similarity = image_similarity_service.compare_shape_features(query_shape_contour, candidate_shape_contour)
 
-                # Combine scores with weighting. These weights can be tuned.
-                combined_similarity = (0.8 * clip_similarity) + (0.1 * color_similarity) + (0.1 * shape_similarity)
+                # # Combine scores with weighting. These weights can be tuned.
+                # combined_similarity = (0.8 * clip_similarity) + (0.1 * color_similarity) + (0.1 * shape_similarity)
 
                 return models.ImageSimilarityInfo(
                     s3_image_key=source_s3_key,
-                    combined_similarity=combined_similarity,
-                    shape_similarity=shape_similarity,
-                    color_similarity=color_similarity,
                     clip_similarity=clip_similarity
                 )
             except ClientError as e:
@@ -116,10 +113,10 @@ def _find_similar_images_with_reranking_sync(
             reranked_results = [result for result in results_iterator if result is not None]
 
         # 4. Sort by the new combined similarity and filter by threshold
-        reranked_results.sort(key=lambda x: x.combined_similarity, reverse=True)
+        reranked_results.sort(key=lambda x: x.clip_similarity, reverse=True)
 
         for result in reranked_results:
-            if result.combined_similarity >= similarity_threshold:
+            if result.clip_similarity >= similarity_threshold:
                 similar_images.append(result)
             if len(similar_images) >= img_cnt:
                 break

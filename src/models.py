@@ -18,9 +18,9 @@ class LogoMatchResponse(BaseModel):
 
 class ImageSimilarityInfo(BaseModel):
     s3_image_key: str
-    color_similarity: float
-    shape_similarity: float
-    combined_similarity: float
+    # color_similarity: float
+    # shape_similarity: float
+    # combined_similarity: float
     clip_similarity: float
 
 class FindSimilarImagesResponse(BaseModel):

@@ -57,7 +57,7 @@ def _generate_fuzzy_query(query_text: str) -> str:
     '((("coca*" OR ...) AND ("cola*" OR ...))) OR ("cocacola*" OR ...)'
     """
     lower_query = query_text.lower()
-    words = lower_query.split()
+    words = [lower_query.replace(" ", "")]
 
     if not words:
         return ""
@@ -77,7 +77,7 @@ def _generate_fuzzy_query(query_text: str) -> str:
     # --- Strategy 2: Match the whole query as a single token (no spaces) ---
     # This helps find matches where words are concatenated, e.g., "CocaCola".
     combined_query = ""
-    if len(words) > 1:
+    if len(words)> 1:
         combined_token = "".join(words)
         parts = _get_fuzzy_parts_for_token(combined_token)
         if parts:
@@ -147,7 +147,8 @@ def _execute_match_query(
                 ranked_results.append({
                     "image_identifier": row["image_identifier"],
                     "source_type": row["source_type"],
-                    "score": similarity
+                    "score": similarity,
+                    "extracted_text": row["extracted_text"]
                 })
         
         # Sort and limit
@@ -158,6 +159,7 @@ def _execute_match_query(
         for entry in final_results:
             image_identifier = entry["image_identifier"]
             source_type = entry["source_type"]
+            print(entry["extracted_text"], entry["score"])
             if source_type == 'S3' and OCR_SOURCE_BUCKET_NAME and AWS_DEFAULT_REGION:
                 key_prefix = OCR_SOURCE_S3_PREFIX.rstrip('/')
                 object_key = f"{key_prefix}/{image_identifier}" if key_prefix else image_identifier

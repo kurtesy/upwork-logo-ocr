@@ -1,25 +1,31 @@
-# Image OCR and Similarity Matching Service
+# AI-Powered Image OCR and Similarity Matching Service
 
 ## Overview
 
-This service provides an API for performing Optical Character Recognition (OCR) on images and finding similarities between images based on their visual features (color and shape).
+This service provides a high-performance API for Optical Character Recognition (OCR) and advanced AI-powered image similarity matching. It leverages state-of-the-art machine learning models and algorithms to deliver accurate and efficient results.
 
-The service also includes a standalone script to trigger bulk OCR processing.
+The core of the image matching is a sophisticated AI pipeline that combines deep learning embeddings with traditional computer vision techniques for superior performance.
 
-## Features
+## Key Features
 
-- **OCR Processing**: Extracts text from images using EasyOCR (or Pytesseract as a fallback).
-- **Image Source**: Supports processing images from local directories or AWS S3 buckets.
-- **Grayscale Conversion**: Converts images to grayscale before OCR and for similarity comparison, potentially improving accuracy and consistency. Grayscale versions can be saved locally or to S3.
-- **SQLite Database**: Stores extracted OCR text for efficient querying.
-- **Text-Based Logo Matching**:
-  - Find logos by text similarity against stored OCR results.
-  - Bulk endpoint for matching multiple text queries.
-- **Image-Based Similarity Matching**:
-  - Compare an uploaded grayscale image against a collection of grayscale images in an S3 bucket.
-  - Similarity is determined by color histograms and shape (Hu Moments).
-  - Bulk endpoint for matching multiple uploaded images.
+- **AI-Powered Image Matching**: Utilizes OpenAI's **CLIP** model to generate rich, semantic vector embeddings for images. This allows the system to understand the content and context of an image, not just its pixels.
+- **High-Speed Search**: Employs **Faiss** from Meta AI for highly efficient similarity search on millions of image vectors.
+- **Advanced Re-ranking Algorithm**: Initial search candidates from Faiss are re-ranked using a combination of:
+    - **CLIP Similarity**: The primary semantic similarity score.
+    - **Color Similarity**: Analysis of color histograms.
+    - **Shape Similarity**: Comparison of image contours.
+- **Fuzzy Text Search**: For text-based logo matching, the service uses a custom-built fuzzy search algorithm on top of a SQLite FTS5 index. This provides robust matching even with OCR inaccuracies or text variations.
+- **OCR Processing**: Extracts text from images using EasyOCR.
+- **Bulk Processing**: Offers bulk endpoints for both text and image matching.
 - **API Documentation**: Interactive API documentation available via Swagger UI and ReDoc.
+
+## Image Matching AI Pipeline
+
+The image matching process follows a multi-stage pipeline to ensure both speed and accuracy:
+
+1.  **Feature Extraction (CLIP)**: When an image is uploaded, its semantic features are extracted using the CLIP model, generating a dense vector embedding.
+2.  **Candidate Retrieval (Faiss)**: The query vector is used to search the Faiss index, which contains the pre-computed vectors of the entire image database. This step rapidly retrieves a set of the most likely candidates.
+3.  **Re-ranking**: The candidates from Faiss are then re-ranked using a weighted combination of CLIP similarity, color similarity, and shape similarity. This refines the search results, ensuring that the top matches are not only semantically similar but also visually alike in terms of color and shape.
 
 ## API Endpoints
 
@@ -27,223 +33,66 @@ The API server runs by default on `http://127.0.0.1:8000`.
 
 ### Authentication
 
-All endpoints, except for the root health check (`/`), require API key authentication.
-The API key must be provided in the `X-API-KEY` request header.
-Refer to the "Environment Variables" section for setting up the `API_KEY`.
+All endpoints require an API key to be provided in the `X-API-KEY` request header.
 
 ### Health Check
 
-- **`GET /`**
-  - **Summary**: Service Health Check.
-  - **Description**: Provides a simple health check message and the status of the SQLite database.
-  - **Response**:
-    ```json
-    {
-      "message": "Image OCR Service is running.",
-      "database_status": "SQLite DB at ocr_results.db found"
-    }
-    ```
+- **`GET /`**: Provides a simple health check message.
 
-### OCR Text Matching
+### Text Matching
 
-- **`GET /ocr/text-match`**
+- **`GET /ocr/text/text-match`**: Find logos by OCR text similarity using fuzzy search.
+- **`POST /ocr/text/bulk-text-match`**: Bulk find logos by OCR text similarity.
 
-  - **Summary**: Find logos by OCR text similarity.
-  - **Description**: Searches through processed OCR results in the SQLite database to find logos whose extracted text matches the provided query text with at least the given similarity threshold.
-  - **Query Parameters**:
-    - `query_text` (string, required): The text to search for.
-    - `similarity_threshold` (float, optional, default: 0.7): Minimum similarity ratio (0.0 to 1.0).
-  - **Response (`LogoMatchResponse`)**:
-    ```json
-    {
-      "query_text": "example",
-      "similarity_threshold": 0.7,
-      "matching_logos": ["image1.jpg.txt", "image2.png.txt"],
-      "processed_ocr_files": 150,
-      "errors": []
-    }
-    ```
+### Image Matching
 
-- **`POST /ocr/bulk-text-match`**
-  - **Summary**: Bulk find logos by OCR text similarity (max 100 queries).
-  - **Description**: Processes a list of up to 100 text queries to find matching logos.
-  - **Request Body (`BulkLogoMatchRequest`)**:
-    ```json
-    {
-      "queries": [
-        { "query_text": "logo one" },
-        { "query_text": "another brand" }
-      ],
-      "similarity_threshold": 0.65
-    }
-    ```
-  - **Response (`BulkLogoMatchResponse`)**:
-    ```json
-    {
-      "results": [
-        {
-          "query_text": "logo one",
-          "matching_logos": ["logo_one_variant1.jpg"],
-          "processed_ocr_files": 150,
-          "errors": []
-        },
-        {
-          "query_text": "another brand",
-          "matching_logos": [],
-          "processed_ocr_files": 150,
-          "errors": ["Some specific error for this query if any"]
-        }
-      ]
-    }
-    ```
+- **`POST /ocr/image/image-match`**: Find similar images by uploading an image. The image is processed through the AI pipeline (CLIP -> Faiss -> Re-ranking).
+- **`POST /ocr/image/image-url-match`**: Find similar images from an image URL.
+- **`POST /ocr/image/bulk-image-match`**: Bulk find similar images by uploading multiple images.
+- **`POST /ocr/image/bulk-image-url-match`**: Bulk find similar images from a list of image URLs.
+- **`GET /ocr/image/image/{image_name}`**: Retrieve an image from the S3 bucket.
 
-### Image Similarity Matching
-
-- **`POST /ocr/image-match`**
-
-  - **Summary**: Compare uploaded image with S3 grayscale images.
-  - **Description**: Upload a grayscale image and compare it against a collection of grayscale images stored in an S3 bucket. Returns a list of S3 images that are similar based on color and shape analysis.
-  - **Query Parameters**:
-    - `similarity_threshold` (float, optional, default: 0.6): Minimum combined similarity score.
-  - **Request Body**: Form data with `uploaded_file` (file part).
-  - **Response (`FindSimilarImagesResponse`)**s:
-    ```json
-    {
-      "uploaded_filename": "my_test_image.jpg",
-      "similar_images": [
-        {
-          "s3_image_key": "images/grayscale/similar_image1.jpeg",
-          "color_similarity": 0.85,
-          "shape_similarity": 0.75,
-          "combined_similarity": 0.8
-        }
-      ],
-      "errors": []
-    }
-    ```
-
-- **`POST /ocr/bulk-image-match`**
-  - **Summary**: Bulk compare uploaded images with S3 (max 100 images).
-  - **Description**: Upload a list of up to 100 grayscale images and compare each against images in S3.
-  - **Query Parameters**:
-    - `similarity_threshold` (float, optional, default: 0.6): Minimum combined similarity score.
-  - **Request Body**: Form data with `uploaded_files` (multiple file parts).
-  - **Response**: A list of `FindSimilarImagesResponse` objects, one for each uploaded image.
-    ```json
-    [
-      {
-        "uploaded_filename": "image_a.jpg",
-        "similar_images": [
-          /* ... */
-        ],
-        "errors": []
-      },
-      {
-        "uploaded_filename": "image_b.png",
-        "similar_images": [
-          /* ... */
-        ],
-        "errors": [
-          "Could not decode S3 image: images/grayscale/problem_image.jpeg"
-        ]
-      }
-    ]
-    ```
-
-## API Documentation (Swagger UI / ReDoc)
-
-Once the API server is running, interactive API documentation is available at:
-
-- **Swagger UI**: `http://127.0.0.1:8000/docs`
-- **ReDoc**: `http://127.0.0.1:8000/redoc`
-
-## Setup and Running the Service
+## Setup and Running
 
 ### Prerequisites
 
 - Python 3.8+
 - Pip
-- Tesseract OCR Engine (and language packs, e.g., `eng`, `hin`)
 - Git
+- An AWS account with S3 credentials configured.
 
 ### Environment Variables
 
-Create a `.env` file in the project root directory with the following variables (adjust as needed):
-
-```env
-AWS_ACCESS_KEY_ID=your_aws_access_key
-AWS_SECRET_ACCESS_KEY=your_aws_secret_key
-AWS_DEFAULT_REGION=your_aws_region
-
-SOURCE_BUCKET_NAME=your_source_s3_bucket_for_ocr
-SOURCE_PREFIX=images/original/
-DESTINATION_BUCKET_NAME=your_destination_s3_bucket # Can be same as source
-GRAYSCALE_DESTINATION_PREFIX=images/grayscale/
-# VECTOR_DESTINATION_PREFIX=images/vectors/ # If you implement vectorization
-
-PROCESSING_MODE=S3 # or LOCAL
-LOCAL_IMAGE_SOURCE_DIR=./local_images/
-LOCAL_GRAYSCALE_DESTINATION_DIR=./local_images_grayscale/
-SQLITE_DB_PATH=ocr_results.db
-
-TESSERACT_CMD=/usr/bin/tesseract # Optional: Path to Tesseract executable if not in PATH
-
-# For API server (main.py)
-GRAYSCALE_BUCKET_NAME=your_s3_bucket_with_grayscale_images_for_matching
-API_KEY=your_secret_api_key_here # Add your desired API key
-GRAYSCALE_S3_PREFIX=images/grayscale/
-HOST=0.0.0.0
-PORT=8000
-```
+Create a `.env` file in the project root with the necessary environment variables. See `src/config.py` for a full list of required variables.
 
 ### Installation
 
-1.  Clone the repository:
-    ```bash
-    git clone <your_repository_url>
-    cd upwork-logo-ocr
-    ```
-2.  Create and activate a virtual environment (recommended):
-    ```bash
-    python3 -m venv venv
-    source venv/bin/activate  # On Windows: venv\Scripts\activate
-    ```
-3.  Install dependencies:
-    ```bash
-    pip install -r requirements.txt
-    ```
-4.  Install Tesseract OCR:
-    - On Ubuntu/Debian: `sudo apt install tesseract-ocr tesseract-ocr-eng tesseract-ocr-hin`
-    - On macOS (using Homebrew): `brew install tesseract tesseract-lang`
-    - For other systems, refer to Tesseract documentation.
+1.  Clone the repository.
+2.  Create and activate a virtual environment.
+3.  Install dependencies: `pip install -r requirements.txt`
 
-### Running the OCR Processing Script
+### Building the Image Index
 
-The `scripts/trigger_ocr.py` script processes images (from S3 or local) and populates the SQLite database with OCR results. It also saves grayscale versions of images.
+Before you can use the image matching features, you need to build the Faiss index from your images in S3.
 
 ```bash
-(venv) python scripts/trigger_ocr.py
+python scripts/build_image_index.py
 ```
 
-Ensure `PROCESSING_MODE` and related paths/bucket names are correctly set in your `.env` file.
+This script will:
+1.  Download images from your S3 bucket.
+2.  Use the CLIP model to extract feature vectors.
+3.  Build a Faiss index and save it to disk.
 
 ### Running the API Server
 
 ```bash
-(venv) python main.py
+python main.py
 ```
 
-The server will start, typically on `http://0.0.0.0:8000`.
+The server will start on `http://0.0.0.0:8000`.
 
-## Testing
+## API Documentation
 
-The `test.py` script provides examples for testing the `/ocr/text-match` and `/ocr/image-match` endpoints.
-
-1.  Ensure the API server is running.
-2.  Modify `test.py` with appropriate query texts, image paths, and thresholds.
-3.  Run the test script:
-    ```bash
-    (venv) python test.py
-    ```
-
-You will need a sample grayscale image (e.g., `sample_grayscale_image.jpg` or use one from `local_images_grayscale/`) for `test_image_match_endpoint`.
+- **Swagger UI**: `http://127.0.0.1:8000/docs`
+- **ReDoc**: `http://127.0.0.1:8000/redoc`

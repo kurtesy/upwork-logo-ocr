@@ -54,7 +54,7 @@ class OcrProcessor:
         self.aws_secret_access_key = os.getenv("AWS_SECRET_ACCESS_KEY")
         self.aws_default_region = os.getenv("AWS_DEFAULT_REGION")
         self.source_bucket_name = os.getenv("SOURCE_BUCKET_NAME", "newbucket-trademark")
-        self.source_prefix = os.getenv("SOURCE_PREFIX", "images/original/")
+        self.source_prefix = os.getenv("SOURCE_PREFIX", "images/real/")
         self.destination_bucket_name = os.getenv("DESTINATION_BUCKET_NAME", "newbucket-trademark")
         self.grayscale_destination_prefix = os.getenv("GRAYSCALE_DESTINATION_PREFIX", "images/grayscale/")
         self.processing_mode = os.getenv("PROCESSING_MODE", "S3").upper()

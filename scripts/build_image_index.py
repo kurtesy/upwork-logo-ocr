@@ -8,14 +8,14 @@ import faiss
 import numpy as np
 from dotenv import load_dotenv
 from botocore.exceptions import ClientError
-from src.config import (OCR_SOURCE_S3_PREFIX, FAISS_INDEX_PATH, KEY_MAP_PATH,
-                        OCR_SOURCE_BUCKET_NAME)
 
 # Add the project root directory to the Python path to resolve module imports.
 # This allows the script to find the 'services' module when run directly.
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from services.image_similarity_service import ImageSimilarityService
+from src.config import (OCR_SOURCE_S3_PREFIX, FAISS_INDEX_PATH, KEY_MAP_PATH,
+                        OCR_SOURCE_BUCKET_NAME)
 
 # --- Load environment variables ---
 load_dotenv()
@@ -33,6 +33,7 @@ class IndexBuilder:
         """Initializes the IndexBuilder, loading configuration and services."""
         # --- Configuration ---
         self.original_image_bucket = OCR_SOURCE_BUCKET_NAME
+        print("OCR_SOURCE_S3_PREFIX", OCR_SOURCE_S3_PREFIX)
         self.original_image_prefix = OCR_SOURCE_S3_PREFIX
         self.faiss_index_path = FAISS_INDEX_PATH
         self.key_map_path = KEY_MAP_PATH
